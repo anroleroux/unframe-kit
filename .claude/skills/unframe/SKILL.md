@@ -5,8 +5,9 @@ description: >-
   Proxy-based reactivity core, HTML/CSS/JS components composed into a single static
   index.html by an awk-based Makefile, and an online/offline build toggle. Use this
   when the user wants to scaffold or extend a lightweight single-file web UI, add a
-  reactive component, wire local-storage persistence, or set up the make-based
-  single-file build. Reflects anroleroux's personal app-building conventions.
+  reactive component, define relational localStorage data models with a dev/stg demo
+  seed, or set up the make-based single-file build. Reflects anroleroux's personal
+  app-building conventions.
 ---
 
 # unframe — building apps with no framework
@@ -113,6 +114,71 @@ To add a component `foo`:
 Wildcard prerequisites (`$(wildcard ui/comps/*.js)`) mean the build re-runs when any
 component changes; no manifest to maintain beyond `web.map`.
 
+## Data models & local storage
+
+Most apps have a **relational data structure**: a handful of entities that reference each
+other by id. **The user provides the CRUD models** — the entities, their fields, and how
+they relate. You don't invent them; you implement against what the user specifies.
+
+Every app keeps a **local, offline instance of its data in browser localStorage, one
+model per key.** The key is the model's name; its value is the JSON array of that model's
+rows. The `loadLocal` / `saveLocal` / `nextLocalId` helpers in `layout.js` are the whole
+data layer for the offline build:
+
+```
+localStorage["products"]   → [ { id: 1, name: "…", category_id: 2, price: 3.49 }, … ]
+localStorage["categories"] → [ { id: 1, name: "…" }, … ]
+```
+
+- **Relations are ids.** A child row stores the parent's `id` (e.g. `category_id`); joins
+  happen in the template/handler code, not in storage.
+- **Ids are local and monotonic** via `nextLocalId(model)` — mirrors what a DB
+  auto-increment would give, so the same code works when a backend lands.
+- This local instance is **universal** — it exists in every build, at every stage. It's
+  the source of truth for the offline build and the working cache/fallback for the online
+  build.
+
+### HARD RULE — document the models in the README
+
+**Always document the app's CRUD models in its README, and update the README whenever a
+model changes.** This is not optional and not deferrable: when you add, remove, or alter a
+model or a field, the README's models section changes in the *same* change. Treat a model
+edit with a stale README as an incomplete change.
+
+Document each entity with its fields, types, and relationships — enough that the models can
+be recreated from the README alone (and later translated into a Supabase schema). A simple
+per-entity table or list is fine; keep it exact.
+
+## The demo seed — dev/stg only, never prd
+
+Ship a **demo seed JS file** (e.g. `ui/demo.js`) that **populates the localStorage keys
+with sample rows when they don't already exist** — one guarded block per model:
+
+```js
+function seedDemo() {
+    if (!localStorage.getItem("categories"))
+        saveLocal("categories", [ { id: 1, name: "Drinks" }, { id: 2, name: "Snacks" } ]);
+    if (!localStorage.getItem("products"))
+        saveLocal("products", [ { id: 1, name: "Cola", category_id: 1, price: 3.49 } ]);
+}
+```
+
+- **It only seeds missing keys** — it never overwrites data the user has entered.
+- **It runs in `dev` and `stg` builds only.** Exclude it from the `prd` build (leave its
+  token out of the prd `web.map`, or strip it the way online blocks are stripped) so
+  **production starts empty and waits for the user to enter real data.**
+- Its rows are the natural place to show the relational shape working end to end, so keep
+  them consistent with the documented models.
+
+## Toward a backend: prd may leave localStorage behind
+
+The local offline instance is the default everywhere, but `prd` can later **pull from a
+real database** (Supabase — see below) instead of browser storage. That transition is a
+genuine design decision, not a free switch: pulling from a DB may mean **disabling browser
+storage in prd**, or **building an offline↔online sync layer** so the local instance and
+the DB stay reconciled. Pick one deliberately when the app reaches that point; until then,
+localStorage is the store.
+
 ## Online / offline: one codebase, two builds
 
 The same source produces two kinds of build: an **offline** build (pure in-browser,
@@ -186,8 +252,11 @@ target. The move is incremental and touches only the code inside the `//online` 
 3. Add `make/web.map` and a `Makefile` that `include make/tpl.mk` and calls
    `$(call compose, …)` for html/css/js, plus an offline build target that `sed`-strips
    the online blocks. Add only the targets the app needs — see "The app evolves" above.
-4. Add one file per component under `ui/comps/`.
-5. Build with `make`; deploy `ui/dist/` as static files.
+4. Get the CRUD models from the user, **document them in the README** (hard rule above),
+   and add a `ui/demo.js` seed that populates each model's localStorage key — wired into
+   the `dev`/`stg` builds only, never `prd`.
+5. Add one file per component under `ui/comps/`.
+6. Build with `make`; deploy `ui/dist/` as static files.
 
 Keep it dependency-free. If a task tempts you toward a framework, a bundler, or an npm
 runtime dep, stop — the whole point of this style is that the output is one static file
