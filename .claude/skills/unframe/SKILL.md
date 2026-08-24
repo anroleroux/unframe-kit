@@ -113,30 +113,70 @@ To add a component `foo`:
 Wildcard prerequisites (`$(wildcard ui/comps/*.js)`) mean the build re-runs when any
 component changes; no manifest to maintain beyond `web.map`.
 
-## Online / offline build modes
+## Online / offline: one codebase, two builds
 
-Data code is written **online-first**, then the online paths are wrapped in markers so
-a build can strip them:
+The same source produces two kinds of build: an **offline** build (pure in-browser,
+localStorage, no backend) and an **online** build (wired to a real backend). Data code
+is written **online-first**, then the online paths are wrapped in markers so the offline
+build can strip them:
 
 ```js
 async function loadProducts() {
     //online-start
-    ... fetch("/api/products") ...   // stripped by `make uidev`
+    ... fetch(...) ...        // stripped in the offline build
     return;
     //online-end
     products.list = loadLocal("products");   // the offline fallback runs
 }
 ```
 
-- `//online-start` … `//online-end` — a block deleted in offline builds.
-- `//online` — a single trailing-comment line deleted in offline builds.
-- The `uidev` / `TRX` target runs `sed` to delete those, leaving a pure
-  **localStorage** app driven by `loadLocal` / `saveLocal` / `nextLocalId` (defined in
-  `layout.js`). This is what deploys to GitHub Pages — a working demo with no backend.
+- `//online-start` … `//online-end` — a block deleted in the offline build.
+- `//online` — a single trailing-comment line deleted in the offline build.
+- The offline build runs `sed` to delete those, leaving a pure **localStorage** app
+  driven by `loadLocal` / `saveLocal` / `nextLocalId` (defined in `layout.js`). This is
+  what deploys to GitHub Pages — a working demo with no backend.
 
-Mode flags are tracked as letters in the target name:
-`T` unit testing · `R` readable (unminified) web content · `G|S` back-end kind
-(e.g. Go / SQL). `XXX` / `TRX` = the flag combination for a given build.
+The backend the online paths target is **Supabase** (see below) — but an app rarely
+starts there. It usually begins life as the offline build alone, and only grows the
+online paths once it needs a real backend.
+
+## The app evolves — build targets are per-project, not a fixed ladder
+
+There is **no fixed set of phases** here. An app starts as whatever it needs to be —
+often just an in-browser localStorage build — and grows toward a backend, auth, and a
+real deploy **gradually**, as the work demands it. The build reflects wherever the app
+currently is, not a predefined ladder.
+
+So treat build targets as **per-project and evolving**, not a standard to conform to:
+
+- A project may grow `dev` / `stg` / `prd` targets (in-browser dev build → staging →
+  production against Supabase), but those names and what they do are that project's
+  choice and will change over time. Don't impose them on a project that doesn't need
+  them.
+- **Flags are optional, not a convention.** If a build genuinely needs a variant (a
+  readable vs. minified output, a test build), a flag is fine — but there is no standard
+  flag alphabet to satisfy. Don't add `T/R/G/S`-style flag machinery preemptively.
+- **The Makefile should contain exactly what the app needs right now — no more.** Add a
+  target when the app reaches for it; don't scaffold empty stages ahead of need. When a
+  target stops earning its place, remove it.
+
+The through-line that *is* stable is the offline↔online split above: it's what lets a
+single codebase serve both the zero-backend demo and the Supabase-backed production
+build, and lets the app move between them without a rewrite.
+
+## Supabase as the backend (the online build)
+
+When an app grows past in-browser storage, **Supabase** is the backend the online paths
+target. The move is incremental and touches only the code inside the `//online` markers
+— the offline build keeps working throughout:
+
+- The `fetch(...)` calls inside `//online-start … //online-end` blocks become calls to
+  Supabase (its REST/`supabase-js` data API, or a small edge function), replacing the
+  `loadLocal` / `saveLocal` fallback on the online path only.
+- Persistence, and later auth, live in Supabase; the offline build still runs entirely
+  from localStorage, so the GitHub Pages demo never needs a backend.
+- Introduce it when the app actually needs shared/persistent data — not at scaffold
+  time. Keep the offline build a first-class target even after Supabase lands.
 
 ## When scaffolding a new app
 
@@ -144,8 +184,8 @@ Mode flags are tracked as letters in the target name:
    (or submodule this kit and reference them — see the kit README).
 2. Create `ui/layout.html`, `layout.css`, `layout.js` with the placeholder tokens.
 3. Add `make/web.map` and a `Makefile` that `include make/tpl.mk` and calls
-   `$(call compose, …)` for html/css/js, plus a `uidev` target that `sed`-strips the
-   online blocks.
+   `$(call compose, …)` for html/css/js, plus an offline build target that `sed`-strips
+   the online blocks. Add only the targets the app needs — see "The app evolves" above.
 4. Add one file per component under `ui/comps/`.
 5. Build with `make`; deploy `ui/dist/` as static files.
 
