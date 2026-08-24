@@ -21,6 +21,39 @@ The reusable runtime lives next to this file in `runtime/` (`reactivity.js`,
 `tpl.mk`). Treat those as the source of truth — copy or submodule them, don't rewrite
 them.
 
+## The tech stack
+
+The preferred stack is deliberately small and boring. Stay inside it unless the app has a
+concrete reason to leave:
+
+- **Frontend** — vanilla **HTML / CSS / JS**. No framework, no npm runtime deps.
+- **Backend** — **Go** (golang) service + **Postgres**, or **Supabase** (managed Postgres
+  with auto REST/auth) as the lower-effort managed option.
+- **Tooling** — **Make** (the build/compose + target orchestration) and **Docker Compose**
+  (spin up local server and DB instances).
+
+Read this as a **proto→production ladder**, climbed gradually (see "The app evolves"):
+
+1. **In-browser only** — vanilla HTML/CSS/JS + localStorage. No backend. The starting
+   point for most apps and what deploys as the GitHub Pages demo.
+2. **Supabase** — a managed Postgres backend reached with little infrastructure; a fast
+   way to get real persistence and auth behind the online build.
+3. **Go + Postgres** — a self-hosted Go service over Postgres. This is normally the
+   **highest rung** — where an app lands when it needs full backend control. You climb to
+   it last, **unless a Go service is specifically required**, in which case bring Go in
+   directly rather than routing through Supabase first.
+
+Both backends sit behind the **same `//online` fetch contract** (below), so moving up the
+ladder changes what the online paths talk to, not the frontend.
+
+### Local server + DB via Docker Compose
+
+When the app has a backend, use **Docker containers** to run it locally: a `docker
+compose` stack that brings up the **Go server** and a **Postgres** instance (and, if used
+locally, the Supabase stack) for `dev`/`stg`. Make targets wrap the compose commands so
+`make dev` (or similar) spins the local instances up. Keep the compose file to exactly the
+services the app currently needs — same rule as the Makefile.
+
 ## The mental model
 
 An app is a set of **components**, each a plain `.js` file, plus a **layout** that
@@ -173,7 +206,8 @@ function seedDemo() {
 ## Toward a backend: prd may leave localStorage behind
 
 The local offline instance is the default everywhere, but `prd` can later **pull from a
-real database** (Supabase — see below) instead of browser storage. That transition is a
+real database** (Supabase, or a Go service over Postgres — see below) instead of browser
+storage. That transition is a
 genuine design decision, not a free switch: pulling from a DB may mean **disabling browser
 storage in prd**, or **building an offline↔online sync layer** so the local instance and
 the DB stay reconciled. Pick one deliberately when the app reaches that point; until then,
@@ -202,9 +236,9 @@ async function loadProducts() {
   driven by `loadLocal` / `saveLocal` / `nextLocalId` (defined in `layout.js`). This is
   what deploys to GitHub Pages — a working demo with no backend.
 
-The backend the online paths target is **Supabase** (see below) — but an app rarely
-starts there. It usually begins life as the offline build alone, and only grows the
-online paths once it needs a real backend.
+The backend the online paths target is **Supabase or a Go + Postgres service** (see
+below) — but an app rarely starts there. It usually begins life as the offline build
+alone, and only grows the online paths once it needs a real backend.
 
 ## The app evolves — build targets are per-project, not a fixed ladder
 
@@ -227,22 +261,31 @@ So treat build targets as **per-project and evolving**, not a standard to confor
   target stops earning its place, remove it.
 
 The through-line that *is* stable is the offline↔online split above: it's what lets a
-single codebase serve both the zero-backend demo and the Supabase-backed production
-build, and lets the app move between them without a rewrite.
+single codebase serve both the zero-backend demo and the backend-backed production build,
+and lets the app move between them without a rewrite.
 
-## Supabase as the backend (the online build)
+## The online build: Supabase, or Go + Postgres
 
-When an app grows past in-browser storage, **Supabase** is the backend the online paths
-target. The move is incremental and touches only the code inside the `//online` markers
-— the offline build keeps working throughout:
+When an app grows past in-browser storage, the online paths target a real backend. The
+move is incremental and touches only the code inside the `//online` markers — the offline
+build keeps working throughout. Two backends, same `fetch` contract:
 
-- The `fetch(...)` calls inside `//online-start … //online-end` blocks become calls to
-  Supabase (its REST/`supabase-js` data API, or a small edge function), replacing the
-  `loadLocal` / `saveLocal` fallback on the online path only.
-- Persistence, and later auth, live in Supabase; the offline build still runs entirely
-  from localStorage, so the GitHub Pages demo never needs a backend.
-- Introduce it when the app actually needs shared/persistent data — not at scaffold
-  time. Keep the offline build a first-class target even after Supabase lands.
+- **Supabase** (managed) — the `fetch(...)` calls inside `//online-start … //online-end`
+  blocks talk to Supabase's REST / `supabase-js` data API (or a small edge function).
+  Persistence and later auth live in Supabase. Lower-effort; reach for it first when a
+  managed Postgres is enough.
+- **Go + Postgres** (self-hosted) — the same `fetch(...)` calls hit a **Go HTTP service**
+  that owns a **Postgres** database. This is the **top of the ladder**: full control over
+  the API and schema. Climb here last, **unless a Go service is specifically required**,
+  in which case go straight to it. Run it locally with the Docker Compose stack (Go server
+  + Postgres); Make targets bring the instances up for `dev`/`stg`.
+
+In both cases only the online path changes — the offline build still runs entirely from
+localStorage, so the GitHub Pages demo never needs a backend. Introduce a backend when the
+app actually needs shared/persistent data, not at scaffold time, and keep the offline
+build a first-class target after it lands. When you move to Postgres (Supabase or Go), the
+documented CRUD models are what the schema is built from — another reason the README
+models must stay exact.
 
 ## When scaffolding a new app
 
@@ -258,6 +301,8 @@ target. The move is incremental and touches only the code inside the `//online` 
 5. Add one file per component under `ui/comps/`.
 6. Build with `make`; deploy `ui/dist/` as static files.
 
-Keep it dependency-free. If a task tempts you toward a framework, a bundler, or an npm
-runtime dep, stop — the whole point of this style is that the output is one static file
-and the toolchain is `make` + `awk` + `sed`.
+Keep the **frontend** dependency-free. If a task tempts you toward a JS framework, a
+bundler, or an npm runtime dep, stop — the whole point of this style is that the frontend
+output is one static file and its toolchain is `make` + `awk` + `sed`. (This is a
+frontend rule; the backend legitimately uses Go, Postgres, and Docker Compose — see "The
+tech stack".)
