@@ -5,8 +5,9 @@ description: >-
   Proxy-based reactivity core, HTML/CSS/JS components composed into a single static
   index.html by an awk-based Makefile, and an online/offline build toggle. Use this
   when the user wants to scaffold or extend a lightweight single-file web UI, add a
-  reactive component, wire local-storage persistence, or set up the make-based
-  single-file build. Reflects anroleroux's personal app-building conventions.
+  reactive component, define relational localStorage data models with a dev/stg demo
+  seed, or set up the make-based single-file build. Reflects anroleroux's personal
+  app-building conventions.
 ---
 
 # unframe — building apps with no framework
@@ -19,6 +20,39 @@ Makefile. Follow these conventions when scaffolding or extending an app in this 
 The reusable runtime lives next to this file in `runtime/` (`reactivity.js`,
 `tpl.mk`). Treat those as the source of truth — copy or submodule them, don't rewrite
 them.
+
+## The tech stack
+
+The preferred stack is deliberately small and boring. Stay inside it unless the app has a
+concrete reason to leave:
+
+- **Frontend** — vanilla **HTML / CSS / JS**. No framework, no npm runtime deps.
+- **Backend** — **Go** (golang) service + **Postgres**, or **Supabase** (managed Postgres
+  with auto REST/auth) as the lower-effort managed option.
+- **Tooling** — **Make** (the build/compose + target orchestration) and **Docker Compose**
+  (spin up local server and DB instances).
+
+Read this as a **proto→production ladder**, climbed gradually (see "The app evolves"):
+
+1. **In-browser only** — vanilla HTML/CSS/JS + localStorage. No backend. The starting
+   point for most apps and what deploys as the GitHub Pages demo.
+2. **Supabase** — a managed Postgres backend reached with little infrastructure; a fast
+   way to get real persistence and auth behind the online build.
+3. **Go + Postgres** — a self-hosted Go service over Postgres. This is normally the
+   **highest rung** — where an app lands when it needs full backend control. You climb to
+   it last, **unless a Go service is specifically required**, in which case bring Go in
+   directly rather than routing through Supabase first.
+
+Both backends sit behind the **same `//online` fetch contract** (below), so moving up the
+ladder changes what the online paths talk to, not the frontend.
+
+### Local server + DB via Docker Compose
+
+When the app has a backend, use **Docker containers** to run it locally: a `docker
+compose` stack that brings up the **Go server** and a **Postgres** instance (and, if used
+locally, the Supabase stack) for `dev`/`stg`. Make targets wrap the compose commands so
+`make dev` (or similar) spins the local instances up. Keep the compose file to exactly the
+services the app currently needs — same rule as the Makefile.
 
 ## The mental model
 
@@ -113,30 +147,145 @@ To add a component `foo`:
 Wildcard prerequisites (`$(wildcard ui/comps/*.js)`) mean the build re-runs when any
 component changes; no manifest to maintain beyond `web.map`.
 
-## Online / offline build modes
+## Data models & local storage
 
-Data code is written **online-first**, then the online paths are wrapped in markers so
-a build can strip them:
+Most apps have a **relational data structure**: a handful of entities that reference each
+other by id. **The user provides the CRUD models** — the entities, their fields, and how
+they relate. You don't invent them; you implement against what the user specifies.
+
+Every app keeps a **local, offline instance of its data in browser localStorage, one
+model per key.** The key is the model's name; its value is the JSON array of that model's
+rows. The `loadLocal` / `saveLocal` / `nextLocalId` helpers in `layout.js` are the whole
+data layer for the offline build:
+
+```
+localStorage["products"]   → [ { id: 1, name: "…", category_id: 2, price: 3.49 }, … ]
+localStorage["categories"] → [ { id: 1, name: "…" }, … ]
+```
+
+- **Relations are ids.** A child row stores the parent's `id` (e.g. `category_id`); joins
+  happen in the template/handler code, not in storage.
+- **Ids are local and monotonic** via `nextLocalId(model)` — mirrors what a DB
+  auto-increment would give, so the same code works when a backend lands.
+- This local instance is **universal** — it exists in every build, at every stage. It's
+  the source of truth for the offline build and the working cache/fallback for the online
+  build.
+
+### HARD RULE — document the models in the README
+
+**Always document the app's CRUD models in its README, and update the README whenever a
+model changes.** This is not optional and not deferrable: when you add, remove, or alter a
+model or a field, the README's models section changes in the *same* change. Treat a model
+edit with a stale README as an incomplete change.
+
+Document each entity with its fields, types, and relationships — enough that the models can
+be recreated from the README alone (and later translated into a Supabase schema). A simple
+per-entity table or list is fine; keep it exact.
+
+## The demo seed — dev/stg only, never prd
+
+Ship a **demo seed JS file** (e.g. `ui/demo.js`) that **populates the localStorage keys
+with sample rows when they don't already exist** — one guarded block per model:
+
+```js
+function seedDemo() {
+    if (!localStorage.getItem("categories"))
+        saveLocal("categories", [ { id: 1, name: "Drinks" }, { id: 2, name: "Snacks" } ]);
+    if (!localStorage.getItem("products"))
+        saveLocal("products", [ { id: 1, name: "Cola", category_id: 1, price: 3.49 } ]);
+}
+```
+
+- **It only seeds missing keys** — it never overwrites data the user has entered.
+- **It runs in `dev` and `stg` builds only.** Exclude it from the `prd` build (leave its
+  token out of the prd `web.map`, or strip it the way online blocks are stripped) so
+  **production starts empty and waits for the user to enter real data.**
+- Its rows are the natural place to show the relational shape working end to end, so keep
+  them consistent with the documented models.
+
+## Toward a backend: prd may leave localStorage behind
+
+The local offline instance is the default everywhere, but `prd` can later **pull from a
+real database** (Supabase, or a Go service over Postgres — see below) instead of browser
+storage. That transition is a
+genuine design decision, not a free switch: pulling from a DB may mean **disabling browser
+storage in prd**, or **building an offline↔online sync layer** so the local instance and
+the DB stay reconciled. Pick one deliberately when the app reaches that point; until then,
+localStorage is the store.
+
+## Online / offline: one codebase, two builds
+
+The same source produces two kinds of build: an **offline** build (pure in-browser,
+localStorage, no backend) and an **online** build (wired to a real backend). Data code
+is written **online-first**, then the online paths are wrapped in markers so the offline
+build can strip them:
 
 ```js
 async function loadProducts() {
     //online-start
-    ... fetch("/api/products") ...   // stripped by `make uidev`
+    ... fetch(...) ...        // stripped in the offline build
     return;
     //online-end
     products.list = loadLocal("products");   // the offline fallback runs
 }
 ```
 
-- `//online-start` … `//online-end` — a block deleted in offline builds.
-- `//online` — a single trailing-comment line deleted in offline builds.
-- The `uidev` / `TRX` target runs `sed` to delete those, leaving a pure
-  **localStorage** app driven by `loadLocal` / `saveLocal` / `nextLocalId` (defined in
-  `layout.js`). This is what deploys to GitHub Pages — a working demo with no backend.
+- `//online-start` … `//online-end` — a block deleted in the offline build.
+- `//online` — a single trailing-comment line deleted in the offline build.
+- The offline build runs `sed` to delete those, leaving a pure **localStorage** app
+  driven by `loadLocal` / `saveLocal` / `nextLocalId` (defined in `layout.js`). This is
+  what deploys to GitHub Pages — a working demo with no backend.
 
-Mode flags are tracked as letters in the target name:
-`T` unit testing · `R` readable (unminified) web content · `G|S` back-end kind
-(e.g. Go / SQL). `XXX` / `TRX` = the flag combination for a given build.
+The backend the online paths target is **Supabase or a Go + Postgres service** (see
+below) — but an app rarely starts there. It usually begins life as the offline build
+alone, and only grows the online paths once it needs a real backend.
+
+## The app evolves — build targets are per-project, not a fixed ladder
+
+There is **no fixed set of phases** here. An app starts as whatever it needs to be —
+often just an in-browser localStorage build — and grows toward a backend, auth, and a
+real deploy **gradually**, as the work demands it. The build reflects wherever the app
+currently is, not a predefined ladder.
+
+So treat build targets as **per-project and evolving**, not a standard to conform to:
+
+- A project may grow `dev` / `stg` / `prd` targets (in-browser dev build → staging →
+  production against Supabase), but those names and what they do are that project's
+  choice and will change over time. Don't impose them on a project that doesn't need
+  them.
+- **Flags are optional, not a convention.** If a build genuinely needs a variant (a
+  readable vs. minified output, a test build), a flag is fine — but there is no standard
+  flag alphabet to satisfy. Don't add `T/R/G/S`-style flag machinery preemptively.
+- **The Makefile should contain exactly what the app needs right now — no more.** Add a
+  target when the app reaches for it; don't scaffold empty stages ahead of need. When a
+  target stops earning its place, remove it.
+
+The through-line that *is* stable is the offline↔online split above: it's what lets a
+single codebase serve both the zero-backend demo and the backend-backed production build,
+and lets the app move between them without a rewrite.
+
+## The online build: Supabase, or Go + Postgres
+
+When an app grows past in-browser storage, the online paths target a real backend. The
+move is incremental and touches only the code inside the `//online` markers — the offline
+build keeps working throughout. Two backends, same `fetch` contract:
+
+- **Supabase** (managed) — the `fetch(...)` calls inside `//online-start … //online-end`
+  blocks talk to Supabase's REST / `supabase-js` data API (or a small edge function).
+  Persistence and later auth live in Supabase. Lower-effort; reach for it first when a
+  managed Postgres is enough.
+- **Go + Postgres** (self-hosted) — the same `fetch(...)` calls hit a **Go HTTP service**
+  that owns a **Postgres** database. This is the **top of the ladder**: full control over
+  the API and schema. Climb here last, **unless a Go service is specifically required**,
+  in which case go straight to it. Run it locally with the Docker Compose stack (Go server
+  + Postgres); Make targets bring the instances up for `dev`/`stg`.
+
+In both cases only the online path changes — the offline build still runs entirely from
+localStorage, so the GitHub Pages demo never needs a backend. Introduce a backend when the
+app actually needs shared/persistent data, not at scaffold time, and keep the offline
+build a first-class target after it lands. When you move to Postgres (Supabase or Go), the
+documented CRUD models are what the schema is built from — another reason the README
+models must stay exact.
 
 ## When scaffolding a new app
 
@@ -144,11 +293,16 @@ Mode flags are tracked as letters in the target name:
    (or submodule this kit and reference them — see the kit README).
 2. Create `ui/layout.html`, `layout.css`, `layout.js` with the placeholder tokens.
 3. Add `make/web.map` and a `Makefile` that `include make/tpl.mk` and calls
-   `$(call compose, …)` for html/css/js, plus a `uidev` target that `sed`-strips the
-   online blocks.
-4. Add one file per component under `ui/comps/`.
-5. Build with `make`; deploy `ui/dist/` as static files.
+   `$(call compose, …)` for html/css/js, plus an offline build target that `sed`-strips
+   the online blocks. Add only the targets the app needs — see "The app evolves" above.
+4. Get the CRUD models from the user, **document them in the README** (hard rule above),
+   and add a `ui/demo.js` seed that populates each model's localStorage key — wired into
+   the `dev`/`stg` builds only, never `prd`.
+5. Add one file per component under `ui/comps/`.
+6. Build with `make`; deploy `ui/dist/` as static files.
 
-Keep it dependency-free. If a task tempts you toward a framework, a bundler, or an npm
-runtime dep, stop — the whole point of this style is that the output is one static file
-and the toolchain is `make` + `awk` + `sed`.
+Keep the **frontend** dependency-free. If a task tempts you toward a JS framework, a
+bundler, or an npm runtime dep, stop — the whole point of this style is that the frontend
+output is one static file and its toolchain is `make` + `awk` + `sed`. (This is a
+frontend rule; the backend legitimately uses Go, Postgres, and Docker Compose — see "The
+tech stack".)
