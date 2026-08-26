@@ -1,0 +1,88 @@
+name: Deploy to GitHub Pages
+
+# Deploys static HTML to GitHub Pages — but only when HTML is actually present.
+# The unframe build produces a single static index.html (offline build) that is
+# the intended Pages demo. This workflow finds that HTML, and if none exists yet
+# it skips the deploy cleanly instead of failing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege token, plus the Pages/OIDC permissions the deploy needs.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect HTML
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.find.outputs.found }}
+      dir: ${{ steps.find.outputs.dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find HTML to publish
+        id: find
+        run: |
+          # Prefer the built single-file output, then common build dirs, then root.
+          # The first candidate that contains an index.html wins as the publish root.
+          candidates="ui/dist dist build public site www ."
+          publish_dir=""
+          for d in $candidates; do
+            if [ -f "$d/index.html" ]; then
+              publish_dir="$d"
+              break
+            fi
+          done
+
+          # Fall back to any directory containing an index.html anywhere in the repo.
+          if [ -z "$publish_dir" ]; then
+            first_index="$(find . -type d -name .git -prune -o -type f -name index.html -print | head -n1)"
+            if [ -n "$first_index" ]; then
+              publish_dir="$(dirname "$first_index")"
+            fi
+          fi
+
+          if [ -n "$publish_dir" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "dir=$publish_dir" >> "$GITHUB_OUTPUT"
+            echo "Found HTML to publish in: $publish_dir"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No index.html found — skipping GitHub Pages deploy."
+          fi
+
+  deploy:
+    name: Deploy
+    needs: detect
+    if: needs.detect.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ needs.detect.outputs.dir }}
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
