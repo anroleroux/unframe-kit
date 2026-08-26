@@ -240,6 +240,69 @@ The backend the online paths target is **Supabase or a Go + Postgres service** (
 below) — but an app rarely starts there. It usually begins life as the offline build
 alone, and only grows the online paths once it needs a real backend.
 
+## Deploying the demo to GitHub Pages
+
+The offline build's single static `index.html` is the **GitHub Pages demo** — a working,
+backend-free version of the app anyone can open from the repo's Pages URL. Ship a GitHub
+Actions workflow that **builds that file and publishes it on every push**, so the demo
+stays in lockstep with the source. This is part of scaffolding an app that has HTML to
+show, not a later add-on.
+
+Add `.github/workflows/pages.yml` in the **app** repo (not in this kit). It runs the
+same `make` + `awk` + `sed` build the developer runs locally — all three are already on
+the `ubuntu-latest` runner, so there's **no toolchain to install** and nothing that
+breaks the dependency-free rule:
+
+```yaml
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]        # deploy the demo on every push to the default branch
+  workflow_dispatch:        # ...and let it be triggered by hand
+
+permissions:                # least privilege the Pages deploy needs
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:                # one deploy at a time; don't cancel an in-flight one
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive        # pull the unframe-kit submodule for the runtime
+
+      - name: Build the offline single-file demo
+        run: make offline               # your project's offline build target → ui/dist/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ui/dist                 # the single-file build output
+      - id: deploy
+        uses: actions/deploy-pages@v4
+```
+
+Adjust two things to the app:
+
+- **The build target.** Build targets are per-project (see below) — swap `make offline`
+  for whatever this app's offline/demo target is actually called, and `ui/dist` for its
+  output directory.
+- **The submodule step.** Keep `submodules: recursive` only if the app vendors this kit
+  as a git submodule; drop it if the runtime is copied in.
+
+One-time repo setup the developer does by hand: **Settings → Pages → Source: GitHub
+Actions.** The workflow does the rest on each push.
+
 ## The app evolves — build targets are per-project, not a fixed ladder
 
 There is **no fixed set of phases** here. An app starts as whatever it needs to be —
@@ -300,6 +363,8 @@ models must stay exact.
    the `dev`/`stg` builds only, never `prd`.
 5. Add one file per component under `ui/comps/`.
 6. Build with `make`; deploy `ui/dist/` as static files.
+7. Add `.github/workflows/pages.yml` to build the offline demo and publish it to GitHub
+   Pages on every push — see "Deploying the demo to GitHub Pages" above.
 
 Keep the **frontend** dependency-free. If a task tempts you toward a JS framework, a
 bundler, or an npm runtime dep, stop — the whole point of this style is that the frontend
