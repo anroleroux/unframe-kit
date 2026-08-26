@@ -282,7 +282,7 @@ jobs:
           submodules: recursive        # pull the unframe-kit submodule for the runtime
 
       - name: Build the offline single-file demo
-        run: make offline               # your project's offline build target → ui/dist/index.html
+        run: make dev                   # the in-browser, seeded offline build → ui/dist/index.html
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
@@ -292,30 +292,38 @@ jobs:
         uses: actions/deploy-pages@v4
 ```
 
+The demo is the **in-browser, seeded offline build** — the `dev` target (see the naming
+preference below), which strips the `//online` blocks and includes the demo seed so
+visitors land on a populated app. Use `make stg` instead if you keep a distinct staging
+demo; don't publish `prd`, which starts empty by design.
+
 Adjust two things to the app:
 
-- **The build target.** Build targets are per-project (see below) — swap `make offline`
-  for whatever this app's offline/demo target is actually called, and `ui/dist` for its
-  output directory.
+- **The build target and output dir.** Swap `make dev` for the app's actual demo target
+  if it differs, and `ui/dist` for its output directory.
 - **The submodule step.** Keep `submodules: recursive` only if the app vendors this kit
   as a git submodule; drop it if the runtime is copied in.
 
 One-time repo setup the developer does by hand: **Settings → Pages → Source: GitHub
 Actions.** The workflow does the rest on each push.
 
-## The app evolves — build targets are per-project, not a fixed ladder
+## The app evolves — how many targets is per-project, but name them dev/stg/prd
 
 There is **no fixed set of phases** here. An app starts as whatever it needs to be —
 often just an in-browser localStorage build — and grows toward a backend, auth, and a
 real deploy **gradually**, as the work demands it. The build reflects wherever the app
 currently is, not a predefined ladder.
 
-So treat build targets as **per-project and evolving**, not a standard to conform to:
+So treat *how many* build targets exist as **per-project and evolving** — but keep their
+*names* predictable:
 
-- A project may grow `dev` / `stg` / `prd` targets (in-browser dev build → staging →
-  production against Supabase), but those names and what they do are that project's
-  choice and will change over time. Don't impose them on a project that doesn't need
-  them.
+- **Prefer the `dev` / `stg` / `prd` names for whatever targets do exist** (in-browser dev
+  build → staging → production against Supabase). The point is muscle memory: running
+  `make dev` / `make stg` / `make prd` should be reliable without opening the Makefile to
+  look up what a target is called. So don't invent app-specific names when one of these
+  fits — but *do* still let the app decide how many targets it needs. A single-file
+  in-browser app may only have `dev`; that's fine. Just don't scaffold `stg`/`prd` before
+  the app reaches for them, and when they arrive, name them from this same vocabulary.
 - **Flags are optional, not a convention.** If a build genuinely needs a variant (a
   readable vs. minified output, a test build), a flag is fine — but there is no standard
   flag alphabet to satisfy. Don't add `T/R/G/S`-style flag machinery preemptively.
