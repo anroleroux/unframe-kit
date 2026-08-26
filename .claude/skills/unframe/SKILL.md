@@ -240,19 +240,90 @@ The backend the online paths target is **Supabase or a Go + Postgres service** (
 below) — but an app rarely starts there. It usually begins life as the offline build
 alone, and only grows the online paths once it needs a real backend.
 
-## The app evolves — build targets are per-project, not a fixed ladder
+## Deploying the demo to GitHub Pages
+
+The offline build's single static `index.html` is the **GitHub Pages demo** — a working,
+backend-free version of the app anyone can open from the repo's Pages URL. Ship a GitHub
+Actions workflow that **builds that file and publishes it on every push**, so the demo
+stays in lockstep with the source. This is part of scaffolding an app that has HTML to
+show, not a later add-on.
+
+Add `.github/workflows/pages.yml` in the **app** repo (not in this kit). It runs the
+same `make` + `awk` + `sed` build the developer runs locally — all three are already on
+the `ubuntu-latest` runner, so there's **no toolchain to install** and nothing that
+breaks the dependency-free rule:
+
+```yaml
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]        # deploy the demo on every push to the default branch
+  workflow_dispatch:        # ...and let it be triggered by hand
+
+permissions:                # least privilege the Pages deploy needs
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:                # one deploy at a time; don't cancel an in-flight one
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive        # pull the unframe-kit submodule for the runtime
+
+      - name: Build the offline single-file demo
+        run: make dev                   # the in-browser, seeded offline build → ui/dist/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ui/dist                 # the single-file build output
+      - id: deploy
+        uses: actions/deploy-pages@v4
+```
+
+The demo is the **in-browser, seeded offline build** — the `dev` target (see the naming
+preference below), which strips the `//online` blocks and includes the demo seed so
+visitors land on a populated app. Use `make stg` instead if you keep a distinct staging
+demo; don't publish `prd`, which starts empty by design.
+
+Adjust two things to the app:
+
+- **The build target and output dir.** Swap `make dev` for the app's actual demo target
+  if it differs, and `ui/dist` for its output directory.
+- **The submodule step.** Keep `submodules: recursive` only if the app vendors this kit
+  as a git submodule; drop it if the runtime is copied in.
+
+One-time repo setup the developer does by hand: **Settings → Pages → Source: GitHub
+Actions.** The workflow does the rest on each push.
+
+## The app evolves — how many targets is per-project, but name them dev/stg/prd
 
 There is **no fixed set of phases** here. An app starts as whatever it needs to be —
 often just an in-browser localStorage build — and grows toward a backend, auth, and a
 real deploy **gradually**, as the work demands it. The build reflects wherever the app
 currently is, not a predefined ladder.
 
-So treat build targets as **per-project and evolving**, not a standard to conform to:
+So treat *how many* build targets exist as **per-project and evolving** — but keep their
+*names* predictable:
 
-- A project may grow `dev` / `stg` / `prd` targets (in-browser dev build → staging →
-  production against Supabase), but those names and what they do are that project's
-  choice and will change over time. Don't impose them on a project that doesn't need
-  them.
+- **Prefer the `dev` / `stg` / `prd` names for whatever targets do exist** (in-browser dev
+  build → staging → production against Supabase). The point is muscle memory: running
+  `make dev` / `make stg` / `make prd` should be reliable without opening the Makefile to
+  look up what a target is called. So don't invent app-specific names when one of these
+  fits — but *do* still let the app decide how many targets it needs. A single-file
+  in-browser app may only have `dev`; that's fine. Just don't scaffold `stg`/`prd` before
+  the app reaches for them, and when they arrive, name them from this same vocabulary.
 - **Flags are optional, not a convention.** If a build genuinely needs a variant (a
   readable vs. minified output, a test build), a flag is fine — but there is no standard
   flag alphabet to satisfy. Don't add `T/R/G/S`-style flag machinery preemptively.
@@ -300,6 +371,8 @@ models must stay exact.
    the `dev`/`stg` builds only, never `prd`.
 5. Add one file per component under `ui/comps/`.
 6. Build with `make`; deploy `ui/dist/` as static files.
+7. Add `.github/workflows/pages.yml` to build the offline demo and publish it to GitHub
+   Pages on every push — see "Deploying the demo to GitHub Pages" above.
 
 Keep the **frontend** dependency-free. If a task tempts you toward a JS framework, a
 bundler, or an npm runtime dep, stop — the whole point of this style is that the frontend
